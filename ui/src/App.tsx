@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   ResponsiveContainer,
   ComposedChart,
@@ -27,9 +27,12 @@ interface ChartPoint {
   lag: number
 }
 
+type StatusLevel = 'HEALTHY' | 'LAGGING' | 'DISCONNECTED'
+
 // ─── Constants ───────────────────────────────────────────────────────
 
 const MAX_HISTORY = 50
+const MAX_LOG_ENTRIES = 100
 const REPLICAS = [
   { id: 'rep-1', port: 8001 },
   { id: 'rep-2', port: 8002 },
@@ -49,6 +52,19 @@ export function lagClass(ms: number): string {
   return 'text-neg'
 }
 
+function getStatus(lagMs: number, connected: boolean): StatusLevel {
+  if (!connected) return 'DISCONNECTED'
+  if (lagMs < 50) return 'HEALTHY'
+  if (lagMs < 200) return 'LAGGING'
+  return 'DISCONNECTED'
+}
+
+function statusDotColor(status: StatusLevel): string {
+  if (status === 'HEALTHY') return 'hsl(var(--pos))'
+  if (status === 'LAGGING') return 'hsl(var(--warn))'
+  return 'hsl(var(--neg))'
+}
+
 function formatClock(seconds: number): string {
   const m = Math.floor(seconds / 60)
   const s = Math.floor(seconds % 60)
@@ -57,19 +73,21 @@ function formatClock(seconds: number): string {
 
 // ─── WebSocket Hook ──────────────────────────────────────────────────
 
-function useReplicaSocket(url: string) {
+function useReplicaSocket(url: string, pushLog: (msg: string) => void) {
   const [state, setState] = useState<WorldState | null>(null)
   const [connected, setConnected] = useState(false)
   const [chartData, setChartData] = useState<ChartPoint[]>([])
   const historyRef = useRef<ChartPoint[]>([])
   const wsRef = useRef<WebSocket | null>(null)
   const backoffRef = useRef(1000)
+  const prevLagWarning = useRef(false)
 
   useEffect(() => {
     historyRef.current = []
     setChartData([])
     setState(null)
     backoffRef.current = 1000
+    prevLagWarning.current = false
 
     function connect() {
       const ws = new WebSocket(url)
@@ -78,6 +96,8 @@ function useReplicaSocket(url: string) {
       ws.onopen = () => {
         setConnected(true)
         backoffRef.current = 1000
+        const rid = url.includes('8002') ? 'rep-2' : 'rep-1'
+        pushLog(`Connected to ${rid}`)
       }
 
       ws.onmessage = (event) => {
@@ -93,10 +113,20 @@ function useReplicaSocket(url: string) {
           { ts: data.game.clock, mid, lag: data.lag_ms },
         ]
         setChartData([...historyRef.current])
+
+        if (data.lag_ms > 2000 && !prevLagWarning.current) {
+          pushLog('Warning: Replica falling behind, lag > 2000ms')
+          prevLagWarning.current = true
+        } else if (data.lag_ms < 200 && prevLagWarning.current) {
+          pushLog('Catching up... lag returning to normal')
+          prevLagWarning.current = false
+        }
       }
 
       ws.onclose = () => {
         setConnected(false)
+        const rid = url.includes('8002') ? 'rep-2' : 'rep-1'
+        pushLog(`Disconnected from ${rid}`)
         const delay = backoffRef.current
         backoffRef.current = Math.min(backoffRef.current * 2, 10000)
         setTimeout(connect, delay)
@@ -115,7 +145,7 @@ function useReplicaSocket(url: string) {
         wsRef.current.close()
       }
     }
-  }, [url])
+  }, [url, pushLog])
 
   return { state, connected, chartData }
 }
@@ -213,18 +243,25 @@ export function Metrics({
   replicaId: string
   connected: boolean
 }) {
+  const status = getStatus(lagMs, connected)
+  const dotColor = statusDotColor(status)
+
   return (
     <div className="flex items-center gap-4 text-sm">
-      <span className="font-mono text-muted-foreground">{replicaId}</span>
+      <div className="flex items-center gap-2">
+        <div
+          className="w-2.5 h-2.5 rounded-full"
+          style={{ backgroundColor: dotColor, boxShadow: `0 0 8px ${dotColor}` }}
+        />
+        <span className="font-mono text-muted-foreground">{replicaId}</span>
+      </div>
       <div className="flex items-center gap-1">
         <span className="text-muted-foreground">Lag:</span>
         <span data-testid="lag-indicator" className={`font-mono ${lagClass(lagMs)}`}>
           {lagMs.toFixed(0)}ms
         </span>
       </div>
-      <span className="text-xs text-muted-foreground">
-        {!connected ? 'DISCONNECTED' : lagMs < 50 ? 'HEALTHY' : lagMs < 200 ? 'LAGGING' : 'DISCONNECTED'}
-      </span>
+      <span className="text-xs text-muted-foreground">{status}</span>
     </div>
   )
 }
@@ -232,41 +269,54 @@ export function Metrics({
 export function Controls({
   onReplicaChange,
   activePort,
+  pushLog,
 }: {
   onReplicaChange: (url: string) => void
   activePort: number
+  pushLog: (msg: string) => void
 }) {
   const [chaosMs, setChaosMs] = useState(0)
 
   const handleWake = async (port: number) => {
+    const rid = port === 8002 ? 'rep-2' : 'rep-1'
     try {
       await fetch(`http://localhost:${port}/api/control`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'wake' }),
       })
-    } catch { /* noop */ }
+      pushLog(`Wake command sent to ${rid}`)
+    } catch {
+      pushLog(`Failed to send wake command to ${rid}`)
+    }
   }
 
   const handleSleep = async (port: number) => {
+    const rid = port === 8002 ? 'rep-2' : 'rep-1'
     try {
       await fetch(`http://localhost:${port}/api/control`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'sleep' }),
       })
-    } catch { /* noop */ }
+      pushLog(`Sleep command sent to ${rid}`)
+    } catch {
+      pushLog(`Failed to send sleep command to ${rid}`)
+    }
   }
 
-  const handleChaos = async (port: number, lagMs: number) => {
-    setChaosMs(lagMs)
+  const handleChaos = async (port: number, ms: number) => {
+    setChaosMs(ms)
     try {
       await fetch(`http://localhost:${port}/api/chaos`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ lag_ms: lagMs }),
+        body: JSON.stringify({ lag_ms: ms }),
       })
-    } catch { /* noop */ }
+      pushLog(`Chaos mode activated: ${ms}ms delay injected`)
+    } catch {
+      pushLog('Failed to send chaos command')
+    }
   }
 
   return (
@@ -275,7 +325,10 @@ export function Controls({
         {REPLICAS.map((r) => (
           <button
             key={r.id}
-            onClick={() => onReplicaChange(`ws://localhost:${r.port}/ws`)}
+            onClick={() => {
+              onReplicaChange(`ws://localhost:${r.port}/ws`)
+              pushLog(`Replica switched to ${r.id}`)
+            }}
             className={`px-3 py-1 rounded text-xs font-mono transition-colors ${
               activePort === r.port
                 ? 'bg-primary text-white'
@@ -375,7 +428,28 @@ function LagSparkline({ data, currentLag }: { data: ChartPoint[]; currentLag: nu
 export default function App() {
   const [wsUrl, setWsUrl] = useState('ws://localhost:8001/ws')
   const activePort = wsUrl.includes('8002') ? 8002 : 8001
-  const { state, connected, chartData } = useReplicaSocket(wsUrl)
+
+  // Logs
+  const logsRef = useRef<string[]>([])
+  const [logs, setLogs] = useState<string[]>([])
+  const logBoxRef = useRef<HTMLDivElement>(null)
+
+  const pushLog = useCallback((msg: string) => {
+    const ts = new Date().toLocaleTimeString('en-US', { hour12: false })
+    logsRef.current = [
+      ...logsRef.current.slice(-(MAX_LOG_ENTRIES - 1)),
+      `[${ts}] ${msg}`,
+    ]
+    setLogs([...logsRef.current])
+  }, [])
+
+  useEffect(() => {
+    if (logBoxRef.current) {
+      logBoxRef.current.scrollTop = logBoxRef.current.scrollHeight
+    }
+  }, [logs])
+
+  const { state, connected, chartData } = useReplicaSocket(wsUrl, pushLog)
 
   return (
     <div className="min-h-screen p-3 flex flex-col gap-3">
@@ -426,7 +500,21 @@ export default function App() {
         {/* Controls */}
         <div className="backdrop-blur-xl rounded-2xl p-4 border shadow-2xl bg-card/80 border-border/30 flex flex-col gap-3">
           <h2 className="text-sm font-semibold text-muted-foreground">Controls</h2>
-          <Controls onReplicaChange={setWsUrl} activePort={activePort} />
+          <Controls onReplicaChange={setWsUrl} activePort={activePort} pushLog={pushLog} />
+        </div>
+      </div>
+
+      {/* Log panel */}
+      <div className="backdrop-blur-xl rounded-2xl p-3 border shadow-2xl bg-card/80 border-border/30">
+        <h2 className="text-xs font-semibold text-muted-foreground mb-1">Console</h2>
+        <div
+          ref={logBoxRef}
+          className="font-mono text-xs text-muted-foreground h-24 overflow-y-auto"
+        >
+          {logs.length === 0 && <span className="opacity-50">No events yet...</span>}
+          {logs.map((line, i) => (
+            <div key={i}>{line}</div>
+          ))}
         </div>
       </div>
     </div>
