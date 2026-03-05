@@ -23,19 +23,11 @@ class Engine:
         if self.finished:
             return self._build_event()
 
-        # 1. Perturb velocity (random walk with momentum)
-        self.ball_vx += random.gauss(0, 5.0) * dt
-        self.ball_vy += random.gauss(0, 5.0) * dt
+        # 1. Update position from current velocity
+        self.ball_x += self.ball_vx
+        self.ball_y += self.ball_vy
 
-        # Damping to keep speeds reasonable
-        self.ball_vx *= 0.98
-        self.ball_vy *= 0.98
-
-        # 2. Update position
-        self.ball_x += self.ball_vx * dt
-        self.ball_y += self.ball_vy * dt
-
-        # 3. Wall bounces (y boundaries)
+        # 2. Wall bounces (y boundaries)
         if self.ball_y <= 0:
             self.ball_y = -self.ball_y
             self.ball_vy = abs(self.ball_vy)
@@ -43,7 +35,7 @@ class Engine:
             self.ball_y = 2 * config.FIELD_H - self.ball_y
             self.ball_vy = -abs(self.ball_vy)
 
-        # 4. Goal detection
+        # 3. Goal detection
         goal_scored = False
         if self.ball_x >= config.FIELD_W and config.GOAL_Y_MIN <= self.ball_y <= config.GOAL_Y_MAX:
             self.score_home += 1
@@ -55,20 +47,29 @@ class Engine:
         if goal_scored:
             self._reset_ball()
 
-        # 5. Clamp to field boundaries (non-goal out of bounds)
+        # 4. Clamp to field boundaries (non-goal out of bounds)
         self.ball_x = max(0.0, min(float(config.FIELD_W), self.ball_x))
         self.ball_y = max(0.0, min(float(config.FIELD_H), self.ball_y))
 
-        # 6. Advance clock
+        # 5. Advance clock
         self.clock += dt
 
-        # 7. Halftime and full time
+        # 6. Halftime and full time
         if self.half == 1 and self.clock >= config.MATCH_DURATION / 2:
             self.half = 2
         if self.clock >= config.MATCH_DURATION:
             self.finished = True
 
-        return self._build_event()
+        # 7. Build event from current state (before perturbing for next tick)
+        event = self._build_event()
+
+        # 8. Perturb velocity for next tick (random walk with momentum)
+        self.ball_vx += random.gauss(0, 0.5)
+        self.ball_vy += random.gauss(0, 0.5)
+        self.ball_vx *= 0.95
+        self.ball_vy *= 0.95
+
+        return event
 
     def _reset_ball(self):
         self.ball_x = 50.0
