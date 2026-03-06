@@ -12,6 +12,62 @@ why soccer + market making? because it touches on exactly the kind of problems n
 
 ---
 
+## deployment
+
+prerequisites: Docker and Docker Compose.
+
+```bash
+# start everything (builds + runs all 5 services)
+docker compose up --build -d
+
+# open the UI
+open http://localhost:3000
+
+# stop everything
+docker compose down
+```
+
+### docker services
+
+| service | image | port | what it does |
+|---------|-------|------|-------------|
+| `redis` | `redis:7-alpine` | 6379 | event stream bus — core writes to `game:events`, replicas consume via `XREAD` |
+| `core` | custom Python | — | match simulation loop, publishes game events at `TICK_RATE_HZ` (default 2). no HTTP server, just a sync loop |
+| `replica-1` | custom Python (FastAPI) | 8001 | consumes Redis stream, computes A-S order book, serves WebSocket + REST API |
+| `replica-2` | same image as replica-1 | 8002 | independent second replica, own chaos/lag state, parameterized by `REPLICA_ID` and `PORT` env vars |
+| `ui` | Node build → nginx | 3000 | React dashboard served as static files via nginx |
+
+### how they connect
+
+```
+docker network (novig_default)
+┌──────────────────────────────────────────────────────┐
+│                                                      │
+│  core ──XADD──> redis <──XREAD── replica-1 ──WS──>  │──port 8001──> browser
+│                       <──XREAD── replica-2 ──WS──>  │──port 8002──> browser
+│                                                      │
+│  ui (nginx static)                                   │──port 3000──> browser
+└──────────────────────────────────────────────────────┘
+```
+
+- core and replicas reference redis as `redis://redis:6379` (docker DNS)
+- replicas also write `core:tick_rate_hz` to redis when the UI adjusts the tick rate slider — core reads this key each tick
+- the UI runs in the browser and connects to replicas via `ws://localhost:{port}/ws`
+- replicas start in sleep mode — the UI auto-wakes whichever replica it connects to
+
+---
+
+## demo walkthrough
+
+1. `docker compose up --build -d` → open `http://localhost:3000`
+2. Replica 1 auto-wakes — ball starts moving, book starts quoting
+3. Click "Replica 2" → click "Wake" → both replicas consume independently, switch between them to compare
+4. Drag Chaos slider to 3000ms → watch lag spike in the chart, book updates fall behind, system log shows warnings
+5. Slide chaos back to 0 → replica catches up, lag returns to normal, system log shows recovery
+6. Click "Kill WS" → force-closes all WebSocket connections, pauses replica for 3s, auto-recovers. UI reconnects automatically via exponential backoff
+
+---
+
 ## the thinking phase (~45 min)
 
 started with no code. just sat down and thought through the architecture end-to-end.
@@ -82,7 +138,7 @@ synchronous python process. 10Hz game loop. ball physics with random walk + mome
 FastAPI app with async Redis consumer. hibernation pattern — sits idle until woken via REST. on activation, connects to Redis Streams with `XREAD BLOCK 1000` (1-second timeout lets the event loop re-evaluate control flags). computes A-S reservation price and optimal spread, generates 5-level book, broadcasts enriched WorldState over WebSocket. includes chaos injection for fault demonstration.
 
 ### ui (5 commits on `ui` branch)
-React 18 + TypeScript + Tailwind dark theme. SVG soccer pitch with ball tracking, HTML table order book with depth bars (not Recharts — tables are better for this), mid-price timeline chart, lag sparkline, replica controls (wake/sleep/chaos). WebSocket hook with capped buffer (50 entries via `useRef`) and exponential backoff reconnect.
+React 18 + TypeScript + Tailwind dark theme. SVG soccer pitch with ball tracking, HTML table order book with depth bars (not Recharts — tables are better for this), mid-price timeline chart, lag sparkline, replica controls (wake/sleep/chaos). WebSocket hook with capped buffer (50 entries via `useRef`) and exponential backoff reconnect. dark finance theme and chart patterns recycled from a previous trading dashboard project (exquant-frontend) — not built from scratch for this exercise.
 
 ### orchestration
 `docker-compose.yml` wires redis + core + replicas + ui. each component has its own Dockerfile. replicas are parameterized by `REPLICA_ID` and `PORT` env vars.
@@ -115,19 +171,38 @@ this incremental approach catches 80% of issues before the full stack is up. eac
 
 ---
 
+## AI & tools
+
+**brainstorming (~45 min):** no AI — architecture designed from first principles on paper.
+
+**stress testing (~30 min):** used Gemini to validate transport decisions (Redis Streams vs Kafka), async patterns, state recovery, and identify edge cases in the A-S model.
+
+**planning (~30 min):** used Gemini to generate the development flow diagrams (`docs/flow/work_flow.png` shows the 6-phase timeline, `docs/flow/git_flow.png` shows branch/merge/test strategy). also used Gemini to structure the implementation specs in `docs/`.
+
+**execution (~3 hrs):** used Claude Code with 3 parallel worktree agents — one per component (core, replica, ui). each agent received a detailed implementation spec and executed independently. `docs/flow/worktree_agent_instructions.png` shows an actual agent prompt.
+
+**UI polish (~1 hr):** used Claude Code for dashboard refinement. dark finance theme recycled from a previous trading dashboard project (exquant-frontend) — not built from scratch.
+
+**where i disagreed with AI:**
+- Claude proposed separate files (pitch.py, pricing.py, types.py) in core — collapsed to single engine.py (~135 lines). splitting would be overengineering
+- Claude wanted Recharts for the order book — HTML table with CSS depth bars is faster and cleaner at 10Hz
+- Claude suggested incremental book updates — full snapshots at 5 levels × 10Hz are tiny, avoids add/remove/modify complexity
+
+---
+
 ## directory structure
 
 ```
 novig/
-├── docs/                          # architecture & implementation specs
+├── docs/                          # agent specs — implementation blueprints given to each worktree agent
 │   ├── 1_high_level.md            # system overview, data flow, docker services
-│   ├── 2.1_core.md                # core layer spec
-│   ├── 2.2_replica.md             # replica layer spec
-│   ├── 2.3_ui.md                  # ui layer spec
-│   ├── 3.1_core_implementation.md # step-by-step build plan
-│   ├── 3.2_replica_implementation.md
-│   ├── 3.3_ui_implementation.md
-│   └── worktree_flow.png          # parallel dev workflow diagram
+│   ├── 2.1_core.md                # core layer spec + implementation notes
+│   ├── 2.2_replica.md             # replica layer spec + implementation notes
+│   ├── 2.3_ui.md                  # ui layer spec + implementation notes
+│   └── flow/                      # development flow diagrams
+│       ├── work_flow.png          # 6-phase timeline
+│       ├── git_flow.png           # branch/merge/test strategy
+│       └── worktree_agent_instructions.png  # actual agent prompt example
 ├── core/                          # → novig-core worktree
 ├── replica/                       # → novig-replica worktree
 ├── ui/                            # → novig-ui worktree
