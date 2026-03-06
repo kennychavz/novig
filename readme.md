@@ -54,7 +54,7 @@ before writing any code, i stress-tested the architecture:
 
 ---
 
-## execution strategy: parallel worktrees
+## execution strategy: parallel worktrees ~1hr
 
 this is where things get interesting. the three components (core, replica, ui) are independent until integration. so i created three git worktrees off the same repo:
 
@@ -89,7 +89,7 @@ React 18 + TypeScript + Tailwind dark theme. SVG soccer pitch with ball tracking
 
 ---
 
-## integration flow
+## integration flow ~ 30min
 
 tested in this order:
 
