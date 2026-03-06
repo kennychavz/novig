@@ -8,6 +8,7 @@ services:
     depends_on: [redis]
     environment:
       - REDIS_URL=redis://redis:6379
+      - TICK_RATE_HZ=2
 
   replica-1:
     build:

@@ -1,3 +1,4 @@
+import math
 import random
 import time
 
@@ -78,7 +79,27 @@ class Engine:
         self.ball_vy = 0.0
 
     def _compute_mid(self):
-        return config.BASE_PRICE + (self.ball_x / config.FIELD_W) * config.PRICE_RANGE
+        # Mid = probability (in cents) that CAN (home, left) wins
+        # Ball position: x=0 is CAN's goal (bad for CAN), x=100 is USA's goal (CAN attacking)
+        positional = config.BASE_PRICE + (self.ball_x / config.FIELD_W) * config.PRICE_RANGE
+
+        # Score adjustment: home goals help, away goals hurt
+        goal_diff = self.score_home - self.score_away  # positive = CAN leading
+
+        # Time factor: a lead matters more late in the match
+        elapsed_frac = min(self.clock / config.MATCH_DURATION, 1.0)
+        time_factor = 0.3 + 0.7 * elapsed_frac
+
+        # Saturating shift: tanh so 1 goal ≈ big move, 5+ goals ≈ near ceiling
+        if goal_diff != 0:
+            sign = 1.0 if goal_diff > 0 else -1.0
+            magnitude = math.tanh(abs(goal_diff) * 0.3) * config.GOAL_MID_SHIFT * time_factor
+            score_shift = sign * magnitude
+        else:
+            score_shift = 0.0
+
+        # Clamp to valid probability range (1-99 cents)
+        return max(1.0, min(99.0, positional + score_shift))
 
     def _compute_vol(self):
         x = self.ball_x
