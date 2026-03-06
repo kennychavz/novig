@@ -9,7 +9,7 @@ def test_avellaneda_stoikov_spread_logic():
 
     low_vol_event = {
         "ball_x": 50, "ball_y": 25, "vol": 0.1, "mid": 70.0,
-        "score": "0-0", "half": 1, "clock": 2700, "ts": 0,
+        "score": "0-0", "half": 1, "clock": 0, "ts": 0,
     }
     engine.update(low_vol_event)
     low_spread = engine.book.asks[0][0] - engine.book.bids[0][0]
@@ -83,3 +83,45 @@ def test_chaos_api():
 
     # Reset
     client.post("/api/chaos", json={"lag_ms": 0})
+
+
+def test_full_pipeline_contract():
+    """Validates the full core→replica data contract without Redis."""
+    engine = ReplicaEngine()
+
+    # Dict matching core's exact output format (all 8 fields, flat types)
+    core_event = {
+        "ball_x": 72.3, "ball_y": 31.0, "vol": 0.25, "mid": 78.92,
+        "score": "1-0", "half": 1, "clock": 1800.0, "ts": 1700000000.0,
+    }
+
+    engine.update(core_event)
+    state = engine.get_world_state(replica_id="rep-test", lag_ms=15.2)
+
+    # WorldState has all required top-level keys
+    assert "replica_id" in state
+    assert "lag_ms" in state
+    assert "game" in state
+    assert "book" in state
+
+    # Book has 5 bid levels and 5 ask levels
+    assert len(state["book"]["bids"]) == 5
+    assert len(state["book"]["asks"]) == 5
+
+    # Bids descending, asks ascending
+    bids = state["book"]["bids"]
+    asks = state["book"]["asks"]
+    for i in range(len(bids) - 1):
+        assert bids[i][0] > bids[i + 1][0]
+    for i in range(len(asks) - 1):
+        assert asks[i][0] < asks[i + 1][0]
+
+    # No crossed book
+    assert bids[0][0] < asks[0][0]
+
+    # Game state mirrors input event
+    assert state["game"]["x"] == 72.3
+    assert state["game"]["y"] == 31.0
+    assert state["game"]["score"] == "1-0"
+    assert state["game"]["half"] == 1
+    assert state["game"]["clock"] == 1800.0

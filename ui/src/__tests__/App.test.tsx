@@ -33,12 +33,11 @@ describe('Lag color indicator', () => {
 })
 
 describe('Replica switch interaction', () => {
-  it('calls onReplicaChange with port 8002 URL when Replica 2 clicked', () => {
+  it('calls onReplicaChange with port 8002 when Replica 2 clicked', () => {
     const onSwitch = vi.fn()
-    const pushLog = vi.fn()
-    render(<Controls onReplicaChange={onSwitch} activePort={8001} pushLog={pushLog} />)
+    render(<Controls onReplicaChange={onSwitch} activePort={8001} />)
 
     fireEvent.click(screen.getByText('Replica 2'))
-    expect(onSwitch).toHaveBeenCalledWith('ws://localhost:8002/ws')
+    expect(onSwitch).toHaveBeenCalledWith(8002)
   })
 })
