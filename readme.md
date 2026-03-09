@@ -108,7 +108,7 @@ Before writing any code (~30 min), I stress-tested the architecture. Confirmed R
 
 ### Parallel Worktrees (~2 hrs)
 
-The three components are independent until integration. I created three git worktrees off the same repo, each with its own branch, implementation plan, test suite, and Dockerfile. Merges are sequential: core first (fast-forward), then replica, then UI. After all three merged, I opened a `ui-overhaul` branch for observability refinements, now merged into `main`. See `docs/flow/git_flow.png` for the visual.
+The three components are independent until integration. I created three git worktrees off the same repo, each with its own branch, implementation plan, test suite, and Dockerfile. Merges are sequential: core first (fast-forward), then replica, then UI. After all three merged, I opened a `ui-overhaul` branch for observability refinements, now merged into `main`. See `docs/flow/architecture.png` for the visual.
 
 | Phase | Branch | Commits | Description |
 |-------|--------|---------|-------------|
@@ -152,9 +152,9 @@ Each component has pytest/Vitest tests that validate the data contract independe
 
 **Stress testing (~30 min).** Used Gemini to validate transport decisions (Redis Streams vs Kafka), async patterns, state recovery, and identify edge cases in the A-S model.
 
-**Planning (~30 min).** Used Gemini to generate the development flow diagrams (`docs/flow/work_flow.png` shows the 6-phase timeline, `docs/flow/git_flow.png` shows branch/merge/test strategy). Also used Gemini to structure the implementation specs in `docs/`.
+**Planning (~30 min).** Used Gemini to generate the development flow diagrams (`docs/flow/work_flow.png` shows the 6-phase timeline, `docs/flow/architecture.png` shows branch/merge/test strategy). Also used Gemini to structure the implementation specs in `docs/`.
 
-**Execution (~2 hrs).** Used Claude Code with 3 parallel worktree agents, one per component (core, replica, UI). Each agent received a detailed implementation spec and executed independently. `docs/flow/worktree_agent_instructions.png` shows an actual agent prompt.
+**Execution (~2 hrs).** Used Claude Code with 3 parallel worktree agents, one per component (core, replica, UI). Each agent received a detailed implementation spec and executed independently. `docs/flow/agent_orchestration.png` shows an actual agent prompt.
 
 **UI polish (~1h).** Used Claude Code for dashboard refinement. Dark finance theme recycled from a previous trading dashboard project (exquant-frontend), not built from scratch.
 
@@ -164,11 +164,12 @@ Each component has pytest/Vitest tests that validate the data contract independe
 - Claude proposed separate files (pitch.py, pricing.py, types.py) in core. Collapsed to single engine.py (~135 lines). Splitting would be overengineering.
 - Claude wanted Recharts for the order book. HTML table with CSS depth bars is faster and cleaner at high update rates.
 - Claude suggested incremental book updates. Full snapshots at 5 levels are tiny, avoids add/remove/modify complexity.
-- Claude insists on long long documentation, I disagree
+- Claude insists on long long documentation, I disagree, high level steps and conversational flow allows for better retention
 
 ---
 
 ## What's Next
 
-- Stateless vs stateful replica spawn: let replicas choose `$` (current only) vs `0` (full replay) on wake, useful for load balancing scenarios.
-- Redis consumer groups: right now each replica tracks its own cursor independently. Consumer groups would add coordinated consumption if replicas needed to shard the workload rather than replicate it.
+- Dynamic instances for real: put a lightweight orchestrator (or just a bash script hitting `docker run`) behind an API endpoint so the UI can spawn/kill replicas on demand instead of pre-configuring them in the compose file.
+- Stateless vs stateful on wake: let each replica choose `$` (current only) vs `0` (full replay) so you can mix fresh consumers with ones that catch up from history.
+- Redis consumer groups if replicas ever need to shard work instead of all reading the same stream.
